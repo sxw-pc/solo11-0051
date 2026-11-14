@@ -5,3 +5,10 @@ __pycache__/
 *.egg-info/
 .venv/
 out/
+venv/
+node_modules/
+*.pyc
+.coverage
+.benchmarks/
+.env
+dist/
