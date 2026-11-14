@@ -1,0 +1,9 @@
+apiVersion: samplelaw/v1
+kind: SamplingPlan
+metadata:
+  name: demo-missing-seed
+sampling:
+  mode: fixed
+  per_stratum: 2
+strata:
+  keys: [channel]

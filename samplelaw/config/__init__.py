@@ -1,0 +1,1 @@
+"""samplelaw config package."""

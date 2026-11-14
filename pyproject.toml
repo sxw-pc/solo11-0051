@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "samplelaw"
+version = "0.1.0"
+description = "Offline sampling-plan legality, replay and representativeness checks"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+preview = ["Flask>=3.0"]
+
+[project.scripts]
+samplelaw = "samplelaw.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["samplelaw*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

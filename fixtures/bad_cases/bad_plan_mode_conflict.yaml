@@ -1,0 +1,11 @@
+apiVersion: samplelaw/v1
+kind: SamplingPlan
+metadata:
+  name: demo-mode-conflict
+sampling:
+  mode: proportional
+  seed: 7
+  total_size: 10
+  per_stratum: 2
+strata:
+  keys: [channel]

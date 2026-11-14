@@ -1,0 +1,40 @@
+apiVersion: samplelaw/v1
+kind: SamplingPlan
+metadata:
+  name: demo-members-fixed
+  version: 1
+  description: "固定量抽样示例：每个渠道抽取 4 名成员"
+sampling:
+  mode: fixed
+  seed: 41001
+  per_stratum: 4
+  min_per_stratum: 1
+  max_per_stratum: 8
+  on_shortfall: warn
+strata:
+  keys:
+    - channel
+  rare_threshold: 0.10
+exclude:
+  - column: status
+    operator: eq
+    value: disabled
+fingerprint:
+  columns:
+    - member_id
+    - region
+    - tier
+    - status
+    - channel
+    - owner
+    - score
+    - joined_at
+  order_sensitive: false
+thresholds:
+  max_share_deviation: 0.20
+  max_weighted_share_deviation: 0.12
+  drift: 0.20
+deviance:
+  dimensions:
+    - tier
+  min_baseline_rows: 2

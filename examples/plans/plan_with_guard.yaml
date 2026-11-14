@@ -1,0 +1,43 @@
+apiVersion: samplelaw/v1
+kind: SamplingPlan
+metadata:
+  name: demo-events-min-coverage
+  version: 1
+  description: "含最小覆盖、排除条款与空层预期的保护式方案"
+sampling:
+  mode: min_coverage
+  seed: 41003
+  total_size: 30
+  min_per_stratum: 2
+  max_per_stratum: 6
+  on_shortfall: warn
+strata:
+  keys:
+    - region
+    - category
+  rare_threshold: 0.08
+  expected_levels:
+    - [south, archive]
+exclude:
+  - column: status
+    operator: eq
+    value: invalid
+fingerprint:
+  columns:
+    - event_id
+    - region
+    - category
+    - status
+    - channel
+    - resolver
+    - duration_ms
+    - created_at
+  order_sensitive: false
+thresholds:
+  max_share_deviation: 0.15
+  max_weighted_share_deviation: 0.10
+  drift: 0.15
+deviance:
+  dimensions:
+    - channel
+  min_baseline_rows: 2

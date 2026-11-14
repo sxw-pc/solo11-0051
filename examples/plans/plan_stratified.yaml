@@ -1,0 +1,41 @@
+apiVersion: samplelaw/v1
+kind: SamplingPlan
+metadata:
+  name: demo-orders-proportional
+  version: 1
+  description: "区域与客户等级双层比例抽样示例"
+sampling:
+  mode: proportional
+  seed: 41002
+  total_size: 30
+  min_per_stratum: 1
+  max_per_stratum: 8
+  on_shortfall: warn
+strata:
+  keys:
+    - region
+    - tier
+  rare_threshold: 0.06
+exclude:
+  - column: status
+    operator: eq
+    value: cancelled
+fingerprint:
+  columns:
+    - order_id
+    - region
+    - tier
+    - status
+    - channel
+    - owner
+    - amount
+    - created_at
+  order_sensitive: false
+thresholds:
+  max_share_deviation: 0.15
+  max_weighted_share_deviation: 0.10
+  drift: 0.20
+deviance:
+  dimensions:
+    - channel
+  min_baseline_rows: 2

@@ -1,0 +1,32 @@
+apiVersion: samplelaw/v1
+kind: Pipeline
+metadata:
+  name: samplelaw-demo-pipeline
+  description: "固定量、双层比例、最小覆盖三类方案的批量核验"
+defaults:
+  output_dir: ../out
+  ledger: ../out/ledger.sqlite
+  report_formats:
+    - markdown
+    - json
+    - html
+jobs:
+  - id: members-fixed
+    plan: plans/plan_basic.yaml
+    source:
+      type: csv
+      path: data/demo_members.csv
+      name: demo-members
+      encoding: utf-8
+  - id: orders-proportional
+    plan: plans/plan_stratified.yaml
+    source:
+      type: csv
+      path: data/demo_orders.csv
+      name: demo-orders
+  - id: events-guarded
+    plan: plans/plan_with_guard.yaml
+    source:
+      type: csv
+      path: data/demo_events.csv
+      name: demo-events

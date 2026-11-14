@@ -1,0 +1,17 @@
+member_id,region,tier,status,channel,owner,score,joined_at
+demo-m-0012,west,bronze,pending,kiosk,demo-org-02,999,2026-03-12
+demo-m-0024,west,bronze,active,kiosk,demo-org-04,65,2026-06-24
+demo-m-0048,west,bronze,active,kiosk,demo-org-03,46,2026-03-20
+demo-m-0060,west,bronze,active,kiosk,demo-org-05,67,2026-06-04
+demo-m-0011,east,silver,active,partner,demo-org-01,88,2026-02-11
+demo-m-0034,south,gold,pending,partner,demo-org-04,52,2026-07-06
+demo-m-0058,south,gold,active,partner,demo-org-03,94,2026-04-02
+demo-m-0071,east,silver,active,partner,demo-org-01,71,2026-08-15
+demo-m-0021,north,bronze,active,store,demo-org-01,75,2026-03-21
+demo-m-0030,south,bronze,active,store,demo-org-05,45,2026-03-02
+demo-m-0054,south,bronze,active,store,demo-org-04,87,2026-09-26
+demo-m-0068,west,silver,active,store,demo-org-03,81,2026-05-12
+demo-m-0003,east,bronze,active,web,demo-org-03,74,2026-03-03
+demo-m-0016,west,gold,active,web,demo-org-01,51,2026-07-16
+demo-m-0017,north,silver,active,web,demo-org-02,68,2026-08-17
+demo-m-0064,west,gold,active,web,demo-org-04,74,2026-01-08
