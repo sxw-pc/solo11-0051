@@ -1,9 +1,10 @@
-"""Local CSV reader with explicit encoding fallback, plus a stable writer."""
+"""Local CSV reader with explicit encoding fallback, plus a stable atomic writer."""
 
 from __future__ import annotations
 
 import csv
 import io
+import os
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -11,6 +12,7 @@ from samplelaw.source.dataset import Dataset
 from samplelaw.util.errors import DataError
 
 _ENCODINGS = ("utf-8-sig", "utf-8", "gbk")
+_STAGING_SUFFIX = ".tmp"
 
 def _decode(raw: bytes, encoding: str | None) -> tuple[str, str]:
     candidates = (encoding,) if encoding else _ENCODINGS
@@ -73,14 +75,7 @@ def read_csv_dataset(
         encoding=used_encoding,
     )
 
-def write_csv_rows(
-    path: str | Path,
-    columns: Sequence[str],
-    rows: Iterable[Mapping[str, str]],
-) -> Path:
-    """Write deterministic UTF-8 CSV with LF newlines and no BOM."""
-    resolved = Path(path)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
+def _render_csv(columns: Sequence[str], rows: Iterable[Mapping[str, str]]) -> bytes:
     buffer = io.StringIO(newline="")
     writer = csv.DictWriter(
         buffer,
@@ -91,8 +86,64 @@ def write_csv_rows(
     writer.writeheader()
     for row in rows:
         writer.writerow({column: row.get(column, "") for column in columns})
+    return buffer.getvalue().encode("utf-8")
+
+def _write_bytes(path: Path, payload: bytes) -> None:
     try:
-        resolved.write_bytes(buffer.getvalue().encode("utf-8"))
+        path.write_bytes(payload)
     except OSError as exc:
-        raise DataError("DATA-004", f"cannot write CSV: {exc}", path=str(resolved)) from exc
+        raise DataError("DATA-004", f"cannot write CSV: {exc}", path=str(path)) from exc
+
+def write_csv_rows(
+    path: str | Path,
+    columns: Sequence[str],
+    rows: Iterable[Mapping[str, str]],
+) -> Path:
+    """Write deterministic UTF-8 CSV with LF newlines and no BOM.
+
+    The payload is first rendered into a sibling temporary file and then
+    atomically swapped into place with :func:`os.replace`, so a reader never
+    observes a half-written file.
+    """
+    resolved = Path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = staging_csv_path(resolved)
+    _write_bytes(staging_path, _render_csv(columns, rows))
+    try:
+        os.replace(staging_path, resolved)
+    except OSError as exc:
+        staging_path.unlink(missing_ok=True)
+        raise DataError("DATA-004", f"cannot replace CSV: {exc}", path=str(resolved)) from exc
     return resolved
+
+def staging_csv_path(final_path: str | Path) -> Path:
+    """Return the sibling temporary path used while staging ``final_path``."""
+    resolved = Path(final_path)
+    return resolved.with_name(f"{resolved.name}.{os.getpid()}{_STAGING_SUFFIX}")
+
+def write_staged_csv(
+    staging_path: str | Path,
+    columns: Sequence[str],
+    rows: Iterable[Mapping[str, str]],
+) -> Path:
+    """Render a CSV to a temporary staging file without touching any target."""
+    resolved = Path(staging_path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    _write_bytes(resolved, _render_csv(columns, rows))
+    return resolved
+
+def commit_staged_csv(staging_path: str | Path, final_path: str | Path) -> Path:
+    """Atomically move a staged CSV onto its final path.
+
+    ``os.replace`` is atomic on the local filesystem and overwrites any
+    previous sample, so reruns can replace an earlier successful output
+    without an intermediate missing-file state.
+    """
+    source = Path(staging_path)
+    target = Path(final_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(source, target)
+    except OSError as exc:
+        raise DataError("DATA-004", f"cannot replace CSV: {exc}", path=str(target)) from exc
+    return target

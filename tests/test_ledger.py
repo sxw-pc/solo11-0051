@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -68,3 +69,69 @@ def test_invalid_query_limit(tmp_path: Path) -> None:
         with pytest.raises(LedgerError) as captured:
             ledger.query_batches(limit=0)
         assert captured.value.code == "LEDGER-005"
+
+def test_transaction_commits_all_rows_together(tmp_path: Path) -> None:
+    with SQLiteLedger(tmp_path / "ledger.sqlite") as ledger:
+        with ledger.transaction():
+            ledger.record_batch(
+                plan_fingerprint="plan-a",
+                plan_name="demo-a",
+                source_fingerprint="src-a",
+                sample_fingerprint="sample-a",
+                replay_status="MATCH",
+                coverage_status="PASS",
+                coverage_rate=1.0,
+                deviance_status="BASELINE",
+                overall_status="PASS",
+                sample_count=1,
+                requested_count=1,
+                alerts=(),
+                composition=None,
+                created_at="2026-11-14T00:00:00Z",
+            )
+            ledger.record_batch(
+                plan_fingerprint="plan-b",
+                plan_name="demo-b",
+                source_fingerprint="src-b",
+                sample_fingerprint="sample-b",
+                replay_status="MATCH",
+                coverage_status="PASS",
+                coverage_rate=1.0,
+                deviance_status="BASELINE",
+                overall_status="PASS",
+                sample_count=1,
+                requested_count=1,
+                alerts=(),
+                composition=None,
+                created_at="2026-11-14T00:00:00Z",
+            )
+        assert len(ledger.query_batches(limit=10)) == 2
+
+def test_transaction_rolls_back_every_row_on_failure(tmp_path: Path) -> None:
+    with SQLiteLedger(tmp_path / "ledger.sqlite") as ledger:
+        with pytest.raises(sqlite3.Error):
+            with ledger.transaction():
+                _record(ledger, sample_fp="sample-one")
+                # A malformed write inside the same transaction must undo the first.
+                ledger._connection.execute(
+                    "INSERT INTO batches (batch_id) VALUES (?)", ("broken",)
+                )
+        assert ledger.query_batches(limit=10) == []
+        # The connection is usable again after rollback.
+        batch, duplicate = _record(ledger, sample_fp="sample-one")
+        assert duplicate is False and batch.batch_id.startswith("batch-")
+
+def test_nested_transactions_share_one_commit(tmp_path: Path) -> None:
+    with SQLiteLedger(tmp_path / "ledger.sqlite") as ledger:
+        with ledger.transaction():
+            _record(ledger, sample_fp="sample-one")
+            with ledger.transaction():
+                _record(ledger, sample_fp="sample-two")
+            # Still uncommitted from the inner context's point of view.
+        assert len(ledger.query_batches(limit=10)) == 2
+
+def test_record_batch_outside_transaction_still_autocommits(tmp_path: Path) -> None:
+    with SQLiteLedger(tmp_path / "ledger.sqlite") as ledger:
+        batch, _ = _record(ledger)
+    with SQLiteLedger(tmp_path / "ledger.sqlite") as reopened:
+        assert reopened.get_batch(batch.batch_id) == batch

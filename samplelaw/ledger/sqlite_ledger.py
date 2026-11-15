@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from samplelaw.util.errors import LedgerError
 from samplelaw.util.hashing import batch_fingerprint
@@ -79,6 +80,7 @@ class SQLiteLedger:
     def __init__(self, path: str | Path = "out/ledger.sqlite"):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._transaction_active = False
         try:
             self._connection = sqlite3.connect(str(self.path))
             self._connection.row_factory = sqlite3.Row
@@ -96,6 +98,41 @@ class SQLiteLedger:
             self._connection.close()
         except sqlite3.Error as exc:
             raise LedgerError("LEDGER-003", f"cannot close ledger: {exc}", path=str(self.path)) from exc
+    @contextmanager
+    def transaction(self) -> Iterator["SQLiteLedger"]:
+        """Boundary for a multi-row batch of writes.
+
+        Every :meth:`record_batch` issued inside the context is held in one
+        SQLite transaction; they all become visible together on successful
+        exit, or are all rolled back when an exception escapes. Nested
+        contexts share the outermost transaction.
+        """
+        if self._transaction_active:
+            yield self
+            return
+        self._transaction_active = True
+        try:
+            try:
+                self._connection.execute("BEGIN")
+            except sqlite3.Error as exc:
+                raise LedgerError(
+                    "LEDGER-002", f"cannot start ledger transaction: {exc}", path=str(self.path)
+                ) from exc
+            yield self
+            try:
+                self._connection.commit()
+            except sqlite3.Error as exc:
+                raise LedgerError(
+                    "LEDGER-002", f"cannot commit ledger transaction: {exc}", path=str(self.path)
+                ) from exc
+        except BaseException:
+            try:
+                self._connection.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            self._transaction_active = False
     def record_batch(
         self,
         *,
@@ -148,7 +185,6 @@ class SQLiteLedger:
                     created_at,
                 ),
             )
-            self._connection.commit()
         except sqlite3.IntegrityError:
             existing = self.get_batch(batch_id)
             if existing is not None:
@@ -156,6 +192,13 @@ class SQLiteLedger:
             raise
         except sqlite3.Error as exc:
             raise LedgerError("LEDGER-002", f"cannot write ledger batch: {exc}", path=str(self.path)) from exc
+        if not self._transaction_active:
+            try:
+                self._connection.commit()
+            except sqlite3.Error as exc:
+                raise LedgerError(
+                    "LEDGER-002", f"cannot commit ledger batch: {exc}", path=str(self.path)
+                ) from exc
         batch = self.get_batch(batch_id)
         if batch is None:
             raise LedgerError("LEDGER-002", "ledger write vanished", path=str(self.path))

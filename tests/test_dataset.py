@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from samplelaw.source.csv_reader import read_csv_dataset, write_csv_rows
+from samplelaw.source.csv_reader import (
+    commit_staged_csv,
+    read_csv_dataset,
+    staging_csv_path,
+    write_csv_rows,
+    write_staged_csv,
+)
 from samplelaw.source.dataset import Dataset, infer_column_types, primary_key_candidates
 from samplelaw.source.sqlite_reader import read_sqlite_dataset
 from samplelaw.util.errors import DataError
@@ -72,6 +78,35 @@ def test_csv_writer_is_lf_and_roundtrips(tmp_path: Path) -> None:
     raw = path.read_bytes()
     assert b"\r\n" not in raw and not raw.startswith(b"\xef\xbb\xbf")
     assert read_csv_dataset(path).rows == ({"id": "1", "name": "demo-a"},)
+
+def test_staged_csv_does_not_touch_final_path_until_commit(tmp_path: Path) -> None:
+    final = tmp_path / "sample.csv"
+    final.write_text("id,name\n0,previous\n", encoding="utf-8")
+    original = final.read_bytes()
+    staging = staging_csv_path(final)
+    assert staging.name != final.name and staging.parent == final.parent
+    write_staged_csv(staging, ["id", "name"], [{"id": "1", "name": "demo-a"}])
+    # The official path is untouched while the sample is only staged.
+    assert final.read_bytes() == original
+    assert read_csv_dataset(staging).rows == ({"id": "1", "name": "demo-a"},)
+    commit_staged_csv(staging, final)
+    assert not staging.exists()
+    assert read_csv_dataset(final).rows == ({"id": "1", "name": "demo-a"},)
+
+def test_write_csv_rows_leaves_no_staging_file(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "sample.csv"
+    write_csv_rows(path, ["id"], [{"id": "1"}])
+    assert path.is_file()
+    assert list(path.parent.glob("*.tmp")) == []
+
+def test_commit_staged_csv_overwrites_existing_sample(tmp_path: Path) -> None:
+    final = tmp_path / "sample.csv"
+    write_csv_rows(final, ["id"], [{"id": "old"}])
+    staging = staging_csv_path(final)
+    write_staged_csv(staging, ["id"], [{"id": "new"}])
+    commit_staged_csv(staging, final)
+    assert read_csv_dataset(final).rows == ({"id": "new"},)
+    assert list(tmp_path.glob("*.tmp")) == []
 
 def test_sqlite_reads_table_and_empty_table(tmp_path: Path) -> None:
     database = tmp_path / "demo.sqlite"

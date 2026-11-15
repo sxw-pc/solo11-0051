@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -22,6 +23,15 @@ def render_report(document: ReportDocument, fmt: str) -> str:
         raise ReportError("REPORT-001", f"unsupported report format: {fmt}")
     return _RENDERERS[fmt][1](document)
 
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    staging_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        staging_path.write_bytes(payload)
+        os.replace(staging_path, path)
+    except OSError as exc:
+        staging_path.unlink(missing_ok=True)
+        raise ReportError("REPORT-002", f"cannot write report: {exc}", path=str(path)) from exc
+
 def write_reports(document: ReportDocument, output_dir: str | Path, formats: tuple[str, ...]) -> dict[str, Path]:
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -31,9 +41,6 @@ def write_reports(document: ReportDocument, output_dir: str | Path, formats: tup
             raise ReportError("REPORT-001", f"unsupported report format: {fmt}")
         filename, renderer = _RENDERERS[fmt]
         path = directory / filename
-        try:
-            path.write_bytes(renderer(document).encode("utf-8"))
-        except OSError as exc:
-            raise ReportError("REPORT-002", f"cannot write report: {exc}", path=str(path)) from exc
+        _atomic_write_bytes(path, renderer(document).encode("utf-8"))
         written[fmt] = path
     return written
