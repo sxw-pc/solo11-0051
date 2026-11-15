@@ -130,9 +130,57 @@ def render_markdown(document: ReportDocument) -> str:
             ],
         ),
         "",
-        "## 告警明细",
+        "### 漂移指标（共同取值域）",
         "",
     ]
+    drift_metrics = document.deviance.get("drift_metrics", [])
+    if drift_metrics:
+        lines.append(
+            _table(
+                ["层", "维度", "共同取值", "总变差距离", "阈值", "结论"],
+                [
+                    [
+                        item["stratum"],
+                        item["dimension"],
+                        ", ".join(item.get("common_values", [])) or "none",
+                        "n/a" if item.get("observed") is None else f"{item['observed']:.4f}",
+                        f"{item['threshold']:.4f}",
+                        item.get("status", ""),
+                    ]
+                    for item in drift_metrics
+                ],
+            )
+        )
+    else:
+        lines.append("无可比对的漂移指标。")
+    lines.extend(["", "### 取值域变化", ""])
+    domain_changes = document.deviance.get("domain_changes", [])
+    if domain_changes:
+        lines.append(
+            _table(
+                ["层", "维度", "变化", "取值", "上一批占比", "本批占比"],
+                [
+                    [
+                        item["stratum"],
+                        item["dimension"],
+                        item["change"],
+                        item["value"],
+                        "n/a" if item.get("previous_share") is None else f"{item['previous_share']:.4f}",
+                        "n/a" if item.get("current_share") is None else f"{item['current_share']:.4f}",
+                    ]
+                    for item in domain_changes
+                ],
+            )
+        )
+    else:
+        lines.append("无取值域变化。")
+    lines.extend(
+        [
+            "",
+            "## 告警明细",
+            "",
+        ]
+    )
     if data["alerts"]:
         lines.append(
             _table(

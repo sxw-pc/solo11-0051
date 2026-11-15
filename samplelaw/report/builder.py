@@ -163,6 +163,7 @@ def build_report_document(
             for item in deviance.alerts
         ],
         "drift_metrics": list(deviance.drift_metrics),
+        "domain_changes": list(deviance.domain_changes),
     }
     return ReportDocument(
         generated_at=timestamp,

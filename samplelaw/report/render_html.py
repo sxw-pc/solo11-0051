@@ -62,6 +62,28 @@ def render_html(document: ReportDocument) -> str:
         ]
         for item in data["alerts"]
     ]
+    drift_rows = [
+        [
+            item["stratum"],
+            item["dimension"],
+            ", ".join(item.get("common_values", [])) or "none",
+            "n/a" if item.get("observed") is None else f"{item['observed']:.4f}",
+            f"{item['threshold']:.4f}",
+            item.get("status", ""),
+        ]
+        for item in deviance.get("drift_metrics", [])
+    ]
+    domain_rows = [
+        [
+            item["stratum"],
+            item["dimension"],
+            item["change"],
+            item["value"],
+            "n/a" if item.get("previous_share") is None else f"{item['previous_share']:.4f}",
+            "n/a" if item.get("current_share") is None else f"{item['current_share']:.4f}",
+        ]
+        for item in deviance.get("domain_changes", [])
+    ]
     warning_rows = [[item["code"], item["stratum"], item["message"]] for item in document.sampling_warnings]
     stratum_rows = [
         [
@@ -162,6 +184,15 @@ def render_html(document: ReportDocument) -> str:
             ],
             "kv",
         ),
+        "</section>",
+        "<section><h2>漂移指标（共同取值域）</h2>",
+        _table(["层", "维度", "共同取值", "总变差距离", "阈值", "结论"], drift_rows)
+        if drift_rows
+        else '<p class="muted">无可比对的漂移指标。</p>',
+        "<h2>取值域变化</h2>",
+        _table(["层", "维度", "变化", "取值", "上一批占比", "本批占比"], domain_rows)
+        if domain_rows
+        else '<p class="muted">无取值域变化。</p>',
         "</section>",
         "<section><h2>告警明细</h2>",
         _table(["类型", "代码", "层", "指标", "阈值", "实测值", "说明"], alert_rows)

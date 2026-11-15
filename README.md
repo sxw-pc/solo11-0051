@@ -83,7 +83,7 @@ python -m samplelaw preview --dir out/reports
 | 空层 | 方案 `expected_levels` 中声明但源数据没有可抽行的层；核验时单列告警，不静默忽略。 |
 | 样本指纹 | 按方案声明列集合逐行生成指纹，再按比较方向汇总成 sha256。相同样本得到相同指纹。 |
 | 重放核验 | 用同一源数据、方案和种子重新执行抽样，与落盘样本逐行指纹比对，结论为 `MATCH` / `DIVERGED` / `INSUFFICIENT_INPUT`。 |
-| 代表性与偏离 | 覆盖率、稀有层命中、占比偏差；相对上一批同方案批次的层内构成漂移，以及超抽/漏抽。 |
+| 代表性与偏离 | 覆盖率、稀有层命中、占比偏差；相对上一批同方案批次的层内构成漂移（先对齐取值域，再在共同取值子集上计算），以及超抽/漏抽。 |
 | 批次 | 方案指纹 + 源数据指纹 + 样本指纹的规范化哈希，重复批次可被台账识别并复用。 |
 
 ## 三种抽样模式
@@ -107,7 +107,7 @@ python -m samplelaw preview --dir out/reports
 - `source`：`name`、`kind`、`fingerprint`。
 - `sample`：`fingerprint`、`mode`、`seed`、`requested_rows`、`rows`、`excluded_rows`、`eligible_rows`。
 - `strata[]`：层名、源行数/占比、目标量、实得量、样本占比、占比偏差、稀有/空层/命中标记。
-- `sampling.warnings[]`、`replay`、`coverage`、`deviance`、`alerts[]`。
+- `sampling.warnings[]`、`replay`、`coverage`、`deviance`、`alerts[]`。`deviance` 内的 `drift_metrics[]` 给出共同取值子集与重归一化后的总变差距离，`domain_changes[]` 记录新增/消失取值的归因明细。
 
 JSON 使用稳定字段顺序、UTF-8 与 LF；Markdown 的表格行顺序稳定；HTML 内联 CSS、无脚本、无外链。相同文档重复渲染得到相同字节。
 
@@ -216,6 +216,10 @@ samplelaw/
 **为什么 `deviance` 是 `BASELINE`？**
 
 同一方案首次入库没有上一批可比，构成漂移以基线记录落库；再次运行同方案的新批次时会对比上一批。完全相同的批次会被台账识别为重复批次。
+
+**为什么 `deviance` 是 `NO_BASELINE`？**
+
+有上一批可比，但某层某维度的共同取值子集为空（两批类别完全更替），无法计算可比的漂移距离。报告 `deviance.domain_changes[]` 会列出新增和消失的取值及各自占比；`deviance.drift_metrics[]` 中该条目的 `status` 也是 `NO_BASELINE`，不会误报为 `PASS`。
 
 **没有 Flask 能用吗？**
 

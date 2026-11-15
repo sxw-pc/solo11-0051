@@ -1,4 +1,10 @@
-"""Detect over-sampling, under-sampling and within-stratum composition drift."""
+"""Detect over-sampling, under-sampling and within-stratum composition drift.
+
+Composition drift compares the baseline and current batches only on the value
+domain they share: values that appeared or disappeared are attributed as
+domain changes, and the drift distance is computed after re-normalizing both
+sides on the shared subset.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +36,7 @@ class DevianceResult:
     baseline_batch_id: str | None
     alerts: tuple[DevianceAlert, ...]
     drift_metrics: tuple[dict[str, Any], ...]
+    domain_changes: tuple[dict[str, Any], ...] = ()
 
 def build_composition(plan: PlanSpec, sample: Dataset) -> Composition:
     """Build the per-stratum dimension histogram stored in the ledger."""
@@ -66,12 +73,56 @@ def _distribution(counts: Mapping[str, int]) -> dict[str, float]:
         return {}
     return {key: value / total for key, value in counts.items()}
 
-def _total_variation(current_counts: Mapping[str, int], previous_counts: Mapping[str, int]) -> float:
-    current = _distribution(current_counts)
-    previous = _distribution(previous_counts)
-    return round(
-        0.5 * sum(abs(current.get(key, 0.0) - previous.get(key, 0.0)) for key in set(current) | set(previous)), 6
-    )
+def _domain_changes(
+    label: str,
+    dimension: str,
+    current_counts: Mapping[str, int],
+    previous_counts: Mapping[str, int],
+) -> list[dict[str, Any]]:
+    """Attribute values that appeared in or disappeared from the value domain."""
+    current_distribution = _distribution(current_counts)
+    previous_distribution = _distribution(previous_counts)
+    changes: list[dict[str, Any]] = []
+    for value in sorted(set(previous_counts) - set(current_counts)):
+        changes.append(
+            {
+                "stratum": label,
+                "dimension": dimension,
+                "value": value,
+                "change": "removed",
+                "previous_share": round(previous_distribution.get(value, 0.0), 6),
+                "current_share": None,
+            }
+        )
+    for value in sorted(set(current_counts) - set(previous_counts)):
+        changes.append(
+            {
+                "stratum": label,
+                "dimension": dimension,
+                "value": value,
+                "change": "added",
+                "previous_share": None,
+                "current_share": round(current_distribution.get(value, 0.0), 6),
+            }
+        )
+    return changes
+
+def _common_subset_variation(
+    current_counts: Mapping[str, int],
+    previous_counts: Mapping[str, int],
+    common_values: Sequence[str],
+) -> float | None:
+    """Total variation on the shared value domain after re-normalizing both sides."""
+    if not common_values:
+        return None
+    if not sum(current_counts[value] for value in common_values):
+        return None
+    if not sum(previous_counts[value] for value in common_values):
+        return None
+    current = _distribution({value: current_counts[value] for value in common_values})
+    previous = _distribution({value: previous_counts[value] for value in common_values})
+    values = sorted(common_values)
+    return round(0.5 * sum(abs(current[value] - previous[value]) for value in values), 6)
 
 def detect_deviance(
     plan: PlanSpec,
@@ -110,6 +161,7 @@ def detect_deviance(
                 )
             )
     drift_metrics: list[dict[str, Any]] = []
+    domain_changes: list[dict[str, Any]] = []
     if previous_composition is not None and composition is not None:
         current_strata = composition.get("strata", {})
         previous_strata = previous_composition.get("strata", {})
@@ -118,21 +170,35 @@ def detect_deviance(
             previous_entry = previous_strata[label]
             current_rows = int(current_entry.get("sample_rows", 0))
             previous_rows = int(previous_entry.get("sample_rows", 0))
-            if current_rows < plan.deviance.min_baseline_rows or previous_rows < plan.deviance.min_baseline_rows:
-                continue
+            # The small-sample guard uses the full stratum size, never the shared subset.
+            rows_sufficient = (
+                current_rows >= plan.deviance.min_baseline_rows
+                and previous_rows >= plan.deviance.min_baseline_rows
+            )
             for dimension in plan.deviance.dimensions:
                 current_counts = current_entry.get("dimensions", {}).get(dimension, {})
                 previous_counts = previous_entry.get("dimensions", {}).get(dimension, {})
-                observed = _total_variation(current_counts, previous_counts)
-                metric = {
+                if not rows_sufficient:
+                    continue
+                domain_changes.extend(
+                    _domain_changes(label, dimension, current_counts, previous_counts)
+                )
+                common_values = sorted(set(current_counts) & set(previous_counts))
+                observed = _common_subset_variation(current_counts, previous_counts, common_values)
+                metric: dict[str, Any] = {
                     "stratum": label,
                     "dimension": dimension,
                     "metric": "total_variation",
                     "threshold": plan.thresholds.drift,
                     "observed": observed,
+                    "common_values": common_values,
+                    "status": "NO_BASELINE" if observed is None else "PASS",
                 }
                 drift_metrics.append(metric)
+                if observed is None:
+                    continue
                 if observed > plan.thresholds.drift:
+                    metric["status"] = "DRIFT"
                     alerts.append(
                         DevianceAlert(
                             code="DEV-003",
@@ -142,15 +208,21 @@ def detect_deviance(
                             metric="total_variation",
                             threshold=plan.thresholds.drift,
                             observed=observed,
-                            message="within-stratum dimension distribution moved beyond threshold",
+                            message=(
+                                "within-stratum dimension distribution moved beyond threshold "
+                                "on the shared value domain"
+                            ),
                         )
                     )
     alerts.sort(key=lambda item: (item.code, item.stratum, item.dimension))
+    domain_changes.sort(key=lambda item: (item["stratum"], item["dimension"], item["value"]))
     baseline = previous_batch_id if previous_composition is not None else None
     if alerts:
         status = "WARN"
     elif previous_composition is None:
         status = "BASELINE"
+    elif drift_metrics and all(item["status"] == "NO_BASELINE" for item in drift_metrics):
+        status = "NO_BASELINE"
     else:
         status = "PASS"
     return DevianceResult(
@@ -158,4 +230,5 @@ def detect_deviance(
         baseline_batch_id=baseline,
         alerts=tuple(alerts),
         drift_metrics=tuple(drift_metrics),
+        domain_changes=tuple(domain_changes),
     )

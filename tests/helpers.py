@@ -35,6 +35,7 @@ def plan_text(
     threshold_weighted: float = 0.15,
     drift: float = 0.2,
     dimensions: Sequence[str] = (),
+    min_baseline_rows: int = 1,
     fingerprint_columns: Sequence[str] | None = None,
 ) -> str:
     sampling: dict[str, Any] = {
@@ -65,7 +66,7 @@ def plan_text(
             "max_weighted_share_deviation": threshold_weighted,
             "drift": drift,
         },
-        "deviance": {"dimensions": list(dimensions), "min_baseline_rows": 1},
+        "deviance": {"dimensions": list(dimensions), "min_baseline_rows": min_baseline_rows},
     }
     if fingerprint_columns:
         data["fingerprint"]["columns"] = list(fingerprint_columns)
