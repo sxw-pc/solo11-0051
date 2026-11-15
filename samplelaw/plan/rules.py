@@ -6,7 +6,7 @@ or a stratum is too small depends on data and belongs to runtime verification.
 
 from __future__ import annotations
 
-from samplelaw.config.schema import MODES, PlanSpec, SHORTFALL_POLICIES
+from samplelaw.config.schema import EXCLUSION_PLACEMENTS, MODES, PlanSpec, SHORTFALL_POLICIES
 from samplelaw.util.errors import ValidationIssue
 
 def validate_plan_semantics(plan: PlanSpec) -> list[ValidationIssue]:
@@ -20,6 +20,14 @@ def validate_plan_semantics(plan: PlanSpec) -> list[ValidationIssue]:
                 "PLAN-004",
                 "sampling.on_shortfall",
                 f"on_shortfall must be one of {SHORTFALL_POLICIES}",
+            )
+        )
+    if plan.exclusions_placement not in EXCLUSION_PLACEMENTS:
+        issues.append(
+            ValidationIssue(
+                "PLAN-004",
+                "exclusions_placement",
+                f"exclusions_placement must be one of {EXCLUSION_PLACEMENTS}",
             )
         )
     if sampling.mode == "fixed":

@@ -22,6 +22,7 @@ from samplelaw.config.parse_utils import (
 )
 from samplelaw.config.schema import (
     API_VERSION,
+    EXCLUSION_PLACEMENTS,
     MODES,
     PLAN_KIND,
     SHORTFALL_POLICIES,
@@ -108,6 +109,20 @@ def _build_plan(data: dict[str, Any], document: YamlDocument) -> PlanSpec:
     )
     expected_levels = parse_expected_levels(strata_raw.get("expected_levels"), "strata.expected_levels", keys, issues)
     exclusions = parse_exclusions(data.get("exclude"), issues)
+    exclusions_placement = as_text(
+        data.get("exclusions_placement"),
+        "exclusions_placement",
+        issues,
+        default="pre",
+    ).lower()
+    if exclusions_placement not in EXCLUSION_PLACEMENTS:
+        issues.append(
+            ValidationIssue(
+                "PLAN-004",
+                "exclusions_placement",
+                f"unsupported placement: {exclusions_placement}",
+            )
+        )
     fingerprint_raw = as_mapping(data.get("fingerprint", {}), "fingerprint", issues)
     unknown_fields(fingerprint_raw, {"columns", "order_sensitive"}, "fingerprint", issues)
     fingerprint_columns = as_string_list(fingerprint_raw.get("columns"), "fingerprint.columns", issues)
@@ -176,6 +191,7 @@ def _build_plan(data: dict[str, Any], document: YamlDocument) -> PlanSpec:
         expected_levels=expected_levels,
         rare_threshold=rare_threshold,
         exclusions=exclusions,
+        exclusions_placement=exclusions_placement,
         fingerprint_columns=fingerprint_columns or None,
         order_sensitive=order_sensitive,
         thresholds=thresholds,

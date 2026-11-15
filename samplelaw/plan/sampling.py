@@ -17,7 +17,7 @@ from samplelaw.plan.stratify import (
 )
 from samplelaw.source.dataset import Dataset
 from samplelaw.util.errors import SamplingError
-from samplelaw.util.hashing import rows_fingerprint
+from samplelaw.util.hashing import canonical_json, rows_fingerprint, sha256_text
 
 @dataclass(frozen=True)
 class SamplingWarning:
@@ -87,6 +87,38 @@ def _shortfall(plan: PlanSpec, key: tuple[str, ...], source_rows: int, required:
     if plan.sampling.on_shortfall == "fail":
         raise SamplingError("SAMP-002", message, path=stratum_label(key))
     return SamplingWarning("SAMP-101", stratum_label(key), message)
+
+def _stratum_seed(seed: int, label: str) -> int:
+    """Derive a deterministic per-stratum seed from the plan seed and stratum name."""
+    return int(sha256_text(canonical_json({"seed": seed, "stratum": label}))[:16], 16)
+
+def _draw_post(
+    candidates: list[tuple[int, dict[str, str]]],
+    target: int,
+    plan: PlanSpec,
+    label: str,
+) -> list[tuple[int, dict[str, str]]]:
+    """Walk the stratum's derived stable order with a single cursor.
+
+    Rows hitting an exclusion rule are dropped in place and the cursor keeps
+    advancing to backfill the seat, so excluded rows never occupy a final
+    seat. The cursor is never reset: each candidate is visited at most once,
+    which keeps the picked rows duplicate-free. If the stratum runs out of
+    continuable candidates before reaching ``target``, the rows gathered so
+    far are kept (shortfall handling already ran during target computation).
+    """
+    if target <= 0 or not candidates:
+        return []
+    ordered = list(candidates)
+    random.Random(_stratum_seed(plan.seed, label)).shuffle(ordered)
+    picked: list[tuple[int, dict[str, str]]] = []
+    for index, row in ordered:
+        if any(_matches(row, rule) for rule in plan.exclusions):
+            continue
+        picked.append((index, row))
+        if len(picked) >= target:
+            break
+    return picked
 
 def _distribute_extras(
     sizes: dict[tuple[str, ...], int],
@@ -199,7 +231,13 @@ def execute_sampling(dataset: Dataset, plan: PlanSpec) -> SamplingResult:
     else:
         targets = _proportional_targets(plan, list(summary.strata), sizes, warnings)
     grouped: dict[tuple[str, ...], list[tuple[int, dict[str, str]]]] = {}
-    for index, row in kept:
+    if plan.exclusions_placement == "post":
+        # Post placement keeps excluded rows in the candidate pool; the
+        # per-stratum cursor drops them during the draw instead.
+        pool = enumerate(dataset.rows)
+    else:
+        pool = iter(kept)
+    for index, row in pool:
         grouped.setdefault(stratum_key(row, stratum_columns), []).append((index, row))
     rng = random.Random(plan.seed)
     sampled: list[SampledRow] = []
@@ -207,18 +245,21 @@ def execute_sampling(dataset: Dataset, plan: PlanSpec) -> SamplingResult:
     for info in summary.strata:
         candidates = grouped.get(info.key, [])
         target = targets[info.key]
-        actual = min(target, len(candidates))
-        picked = rng.sample(candidates, actual) if actual else []
+        if plan.exclusions_placement == "post":
+            picked = _draw_post(candidates, target, plan, info.label)
+        else:
+            picked = rng.sample(candidates, min(target, len(candidates))) if candidates and target else []
+        actual = len(picked)
         for index, row in sorted(picked, key=lambda item: item[0]):
             sampled.append(SampledRow(index=index, row=row, stratum_key=info.key))
         allocations.append(
             Allocation(
                 key=info.key,
                 label=info.label,
-                source_rows=len(candidates),
+                source_rows=sizes[info.key],
                 target=target,
                 actual=actual,
-                empty=not candidates,
+                empty=sizes[info.key] == 0,
             )
         )
     if not sampled:

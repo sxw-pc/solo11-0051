@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import random
+from pathlib import Path
+
 import pytest
 
 from samplelaw.config.loader import load_plan
-from samplelaw.plan.sampling import execute_sampling
+from samplelaw.plan.sampling import _stratum_seed, execute_sampling
 from samplelaw.plan.stratify import enumerate_strata
-from samplelaw.source.csv_reader import read_csv_dataset
+from samplelaw.source.csv_reader import read_csv_dataset, write_csv_rows
 from samplelaw.util.errors import DataError, SamplingError
+from samplelaw.util.hashing import row_fingerprint
 from tests.helpers import EXAMPLES, GOLD, make_dataset, make_plan, simple_dataset
 
 def test_proportional_is_deterministic_and_bounded() -> None:
@@ -116,3 +120,56 @@ def test_gold_snapshot_matches_fixed_plan() -> None:
     gold = read_csv_dataset(GOLD / "plan_basic_sample.csv")
     result = execute_sampling(source, plan)
     assert result.rows == gold.rows
+
+def test_post_exclusion_placement_backfills_and_matches_pre_fingerprint(tmp_path: Path) -> None:
+    seed = 7
+    label = "web"
+    row_count = 12
+    excluded_front = 3
+    # Replicate the sampler's derived candidate order for this seed/stratum and
+    # place the excluded rows at the front of that order, so the post cursor
+    # must skip them and backfill from further down the same order.
+    derived_order = list(range(row_count))
+    random.Random(_stratum_seed(seed, label)).shuffle(derived_order)
+    excluded_positions = set(derived_order[:excluded_front])
+    rows = [
+        {
+            "id": f"row-{position:02d}",
+            "channel": "web",
+            "status": "off" if position in excluded_positions else "on",
+        }
+        for position in range(row_count)
+    ]
+    csv_path = tmp_path / "post_placement.csv"
+    write_csv_rows(csv_path, ["id", "channel", "status"], rows)
+    source = read_csv_dataset(csv_path)
+    excludes = [{"column": "status", "operator": "eq", "value": "off"}]
+    eligible = row_count - excluded_front
+
+    post_plan = make_plan(per_stratum=5, seed=seed, excludes=excludes, exclusions_placement="post")
+    post = execute_sampling(source, post_plan)
+    allocation = post.allocations[0]
+    assert allocation.target == 5
+    assert allocation.actual == 5
+    assert post.actual_total == 5
+    assert post.excluded_rows == excluded_front
+    assert {row["status"] for row in post.rows} == {"on"}
+    # The cursor never resets, so no row can be drawn twice.
+    hashes = [row_fingerprint(row, source.columns) for row in post.rows]
+    assert len(set(hashes)) == len(hashes)
+    # The picks are exactly the first five eligible rows in the derived order.
+    expected_ids = {
+        f"row-{position:02d}" for position in derived_order if position not in excluded_positions
+    }
+    picked_ids = {row["id"] for row in post.rows}
+    assert picked_ids <= expected_ids
+    assert len(picked_ids) == 5
+
+    # Same final sample via both placements must yield the same fingerprint:
+    # taking every eligible row makes the pre/post row sets coincide.
+    pre_full = make_plan(per_stratum=eligible, seed=seed, excludes=excludes, exclusions_placement="pre")
+    post_full = make_plan(per_stratum=eligible, seed=seed, excludes=excludes, exclusions_placement="post")
+    pre_result = execute_sampling(source, pre_full)
+    post_result = execute_sampling(source, post_full)
+    assert {row["id"] for row in pre_result.rows} == {row["id"] for row in post_result.rows}
+    assert pre_result.sample_fingerprint == post_result.sample_fingerprint

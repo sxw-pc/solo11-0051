@@ -28,6 +28,7 @@ def plan_text(
     keys: Sequence[str] = ("channel",),
     rare: float = 0.1,
     excludes: Sequence[Mapping[str, Any]] = (),
+    exclusions_placement: str | None = None,
     expected: Sequence[Sequence[str]] = (),
     order_sensitive: bool = False,
     on_shortfall: str = "warn",
@@ -69,6 +70,8 @@ def plan_text(
     }
     if fingerprint_columns:
         data["fingerprint"]["columns"] = list(fingerprint_columns)
+    if exclusions_placement is not None:
+        data["exclusions_placement"] = exclusions_placement
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
 def make_plan(**kwargs: Any) -> PlanSpec:

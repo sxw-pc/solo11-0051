@@ -19,6 +19,7 @@ PIPELINE_KIND = "Pipeline"
 MODES = ("proportional", "fixed", "min_coverage")
 SHORTFALL_POLICIES = ("warn", "fail")
 EXCLUSION_OPERATORS = ("eq", "neq", "in", "not_in")
+EXCLUSION_PLACEMENTS = ("pre", "post")
 REPORT_FORMATS = ("markdown", "json", "html")
 SOURCE_TYPES = ("csv", "sqlite")
 
@@ -59,6 +60,7 @@ class PlanSpec:
     expected_levels: tuple[tuple[str, ...], ...]
     rare_threshold: float
     exclusions: tuple[Exclusion, ...]
+    exclusions_placement: str
     fingerprint_columns: tuple[str, ...] | None
     order_sensitive: bool
     thresholds: Thresholds
@@ -105,6 +107,7 @@ class PlanSpec:
                 }
                 for item in self.exclusions
             ],
+            "exclusions_placement": self.exclusions_placement,
             "fingerprint": {
                 "columns": list(self.fingerprint_columns) if self.fingerprint_columns else None,
                 "order_sensitive": self.order_sensitive,

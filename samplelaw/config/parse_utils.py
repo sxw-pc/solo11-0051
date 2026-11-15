@@ -14,6 +14,7 @@ TOP_KEYS = {
     "sampling",
     "strata",
     "exclude",
+    "exclusions_placement",
     "fingerprint",
     "thresholds",
     "deviance",
