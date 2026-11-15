@@ -30,6 +30,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--config", required=True, help="path to pipeline.yaml")
     run.add_argument("--generated-at", help="fixed ISO-8601 report timestamp")
     run.add_argument("--json", action="store_true", help="print a JSON run summary")
+    run.add_argument(
+        "--allow-cross-version-baseline",
+        action="store_true",
+        help="allow a semantically equivalent batch from another plan fingerprint "
+        "version to serve as the deviance baseline",
+    )
     verify = sub.add_parser("verify", help="replay and cover-check one persisted sample")
     verify.add_argument("--plan", required=True)
     verify.add_argument("--source", required=True)
@@ -68,7 +74,11 @@ def _load_source_args(args: argparse.Namespace) -> object:
     )
 
 def _run(args: argparse.Namespace) -> int:
-    result = run_pipeline(args.config, generated_at=args.generated_at)
+    result = run_pipeline(
+        args.config,
+        generated_at=args.generated_at,
+        allow_cross_version_baseline=args.allow_cross_version_baseline,
+    )
     summary = pipeline_summary(result)
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2))

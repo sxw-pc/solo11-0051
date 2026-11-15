@@ -6,13 +6,18 @@ objects and the canonical representation used to fingerprint a plan.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from samplelaw.util.errors import ValidationIssue
+from samplelaw.util.hashing import canonical_json, sha256_text
 
 API_VERSION = "samplelaw/v1"
+API_VERSION_V1 = API_VERSION
+API_VERSION_V2 = "samplelaw/v2"
+SUPPORTED_API_VERSIONS = (API_VERSION_V1, API_VERSION_V2)
 PLAN_KIND = "SamplingPlan"
 PIPELINE_KIND = "Pipeline"
 
@@ -65,13 +70,24 @@ class PlanSpec:
     deviance: DevianceSpec
     origin: str = ""
     fingerprint: str = ""
+    api_version: str = API_VERSION_V1
     @property
     def mode(self) -> str:
         return self.sampling.mode
     @property
     def seed(self) -> int:
         return self.sampling.seed
+    @property
+    def semantic_key(self) -> str:
+        """Version-agnostic equivalence key shared by semantically equal plans."""
+        return semantic_group_key(self.canonical())
     def canonical(self) -> dict[str, Any]:
+        """Return the versioned canonical representation used for fingerprinting."""
+        base = self._canonical_v1()
+        if self.api_version == API_VERSION_V2:
+            return _canonical_v2(base)
+        return base
+    def _canonical_v1(self) -> dict[str, Any]:
         """Return a JSON-safe semantic representation with stable ordering."""
         def exclusion_value(value: str | tuple[str, ...]) -> Any:
             return list(value) if isinstance(value, tuple) else value
@@ -120,6 +136,66 @@ class PlanSpec:
             },
         }
 
+def _canonical_v2(base: dict[str, Any]) -> dict[str, Any]:
+    """Derive the v2 canonical form from a v1 canonical dict.
+
+    v2 keeps the v1 shape but stably sorts the order-insensitive
+    collections (``strata.expected_levels`` and ``exclude``), coerces the
+    ratio fields to plain numbers and never carries ``origin``, so plans
+    that only differ in declaration order hash to the same fingerprint.
+    """
+    canonical = copy.deepcopy(base)
+    canonical["apiVersion"] = API_VERSION_V2
+    canonical.pop("origin", None)
+    strata = canonical["strata"]
+    strata["expected_levels"] = sorted(
+        (list(level) for level in strata["expected_levels"]), key=canonical_json
+    )
+    strata["rare_threshold"] = float(strata["rare_threshold"])
+    canonical["exclude"] = sorted(canonical["exclude"], key=canonical_json)
+    canonical["thresholds"] = {
+        key: float(value) for key, value in canonical["thresholds"].items()
+    }
+    return canonical
+
+def normalize_canonical(canonical: Mapping[str, Any]) -> dict[str, Any]:
+    """Irreversibly normalize a canonical dict for equivalence comparison.
+
+    Two canonicals are semantically equivalent iff their normalizations are
+    equal. The transform drops the version marker and ``origin``, stably
+    sorts ``strata.expected_levels`` and ``exclude`` and coerces ratio
+    fields to floats; it cannot be inverted back to the source canonical.
+    """
+    normalized = copy.deepcopy(dict(canonical))
+    normalized.pop("apiVersion", None)
+    normalized.pop("origin", None)
+    strata = normalized.get("strata")
+    if isinstance(strata, dict):
+        levels = strata.get("expected_levels")
+        if isinstance(levels, list):
+            strata["expected_levels"] = sorted(
+                (list(level) for level in levels), key=canonical_json
+            )
+        if "rare_threshold" in strata:
+            strata["rare_threshold"] = float(strata["rare_threshold"])
+    exclude = normalized.get("exclude")
+    if isinstance(exclude, list):
+        normalized["exclude"] = sorted(exclude, key=canonical_json)
+    thresholds = normalized.get("thresholds")
+    if isinstance(thresholds, dict):
+        normalized["thresholds"] = {
+            key: float(value) for key, value in thresholds.items()
+        }
+    return normalized
+
+def semantic_group_key(canonical: Mapping[str, Any]) -> str:
+    """Equivalence-group key: fingerprint of the normalized canonical.
+
+    The hash algorithm itself is unchanged; only the normalized
+    representation is hashed, and no version flag is embedded in it.
+    """
+    return sha256_text(canonical_json(normalize_canonical(canonical)))
+
 @dataclass(frozen=True)
 class SourceSpec:
     kind: str
@@ -143,4 +219,5 @@ class PipelineSpec:
     report_formats: tuple[str, ...]
     jobs: tuple[JobSpec, ...]
     config_path: Path
+    allow_cross_version_baseline: bool = False
     errors_seen: tuple[ValidationIssue, ...] = field(default_factory=tuple)

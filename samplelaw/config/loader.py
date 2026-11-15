@@ -21,10 +21,10 @@ from samplelaw.config.parse_utils import (
     unknown_fields,
 )
 from samplelaw.config.schema import (
-    API_VERSION,
     MODES,
     PLAN_KIND,
     SHORTFALL_POLICIES,
+    SUPPORTED_API_VERSIONS,
     DevianceSpec,
     PlanSpec,
     SamplingSpec,
@@ -38,8 +38,11 @@ from samplelaw.util.hashing import plan_fingerprint
 def _build_plan(data: dict[str, Any], document: YamlDocument) -> PlanSpec:
     issues: list[ValidationIssue] = []
     unknown_fields(data, TOP_KEYS, "", issues)
-    if as_text(data.get("apiVersion"), "apiVersion", issues) != API_VERSION:
-        issues.append(ValidationIssue("PLAN-003", "apiVersion", f"expected {API_VERSION!r}"))
+    api_version = as_text(data.get("apiVersion"), "apiVersion", issues)
+    if api_version not in SUPPORTED_API_VERSIONS:
+        issues.append(
+            ValidationIssue("PLAN-003", "apiVersion", f"expected one of {SUPPORTED_API_VERSIONS}")
+        )
     if as_text(data.get("kind"), "kind", issues) != PLAN_KIND:
         issues.append(ValidationIssue("PLAN-003", "kind", f"expected {PLAN_KIND!r}"))
     metadata = as_mapping(data.get("metadata", {}), "metadata", issues)
@@ -181,6 +184,7 @@ def _build_plan(data: dict[str, Any], document: YamlDocument) -> PlanSpec:
         thresholds=thresholds,
         deviance=DevianceSpec(dimensions=dimensions, min_baseline_rows=min_baseline_rows),
         origin=str(document.path),
+        api_version=api_version,
     )
     semantic_issues = validate_plan_semantics(plan)
     if semantic_issues:

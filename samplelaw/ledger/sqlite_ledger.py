@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from samplelaw.config.schema import API_VERSION_V1
 from samplelaw.util.errors import LedgerError
 from samplelaw.util.hashing import batch_fingerprint
 
-_SCHEMA = """
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS batches (
     batch_id TEXT PRIMARY KEY,
     batch_fingerprint TEXT NOT NULL UNIQUE,
@@ -28,10 +29,13 @@ CREATE TABLE IF NOT EXISTS batches (
     requested_count INTEGER NOT NULL,
     alerts_json TEXT NOT NULL,
     composition_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    fingerprint_version TEXT NOT NULL DEFAULT '{API_VERSION_V1}',
+    semantic_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_batches_plan ON batches(plan_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at);
+CREATE INDEX IF NOT EXISTS idx_batches_semantic ON batches(semantic_key);
 """
 
 @dataclass(frozen=True)
@@ -52,6 +56,8 @@ class LedgerBatch:
     alerts_json: str
     composition_json: str
     created_at: str
+    fingerprint_version: str = API_VERSION_V1
+    semantic_key: str = ""
     def to_dict(self) -> dict[str, Any]:
         return {
             "batch_id": self.batch_id,
@@ -69,6 +75,8 @@ class LedgerBatch:
             "requested_count": self.requested_count,
             "alerts": json.loads(self.alerts_json),
             "created_at": self.created_at,
+            "fingerprint_version": self.fingerprint_version,
+            "semantic_key": self.semantic_key,
         }
 
 def _json(value: Any) -> str:
@@ -83,10 +91,33 @@ class SQLiteLedger:
             self._connection = sqlite3.connect(str(self.path))
             self._connection.row_factory = sqlite3.Row
             self._connection.executescript(_SCHEMA)
+            self._migrate()
             self._connection.execute("PRAGMA journal_mode = DELETE")
             self._connection.commit()
         except sqlite3.Error as exc:
             raise LedgerError("LEDGER-001", f"cannot open ledger: {exc}", path=str(self.path)) from exc
+    def _migrate(self) -> None:
+        """Add fingerprint-version columns to ledgers written by older builds.
+
+        Rows that predate the column are all v1 fingerprints, so the
+        default version is correct for them; their semantic keys stay
+        empty until :meth:`backfill_semantic_key` observes the plan again.
+        """
+        columns = {
+            str(row["name"]) for row in self._connection.execute("PRAGMA table_info(batches)")
+        }
+        if "fingerprint_version" not in columns:
+            self._connection.execute(
+                "ALTER TABLE batches ADD COLUMN fingerprint_version "
+                f"TEXT NOT NULL DEFAULT '{API_VERSION_V1}'"
+            )
+        if "semantic_key" not in columns:
+            self._connection.execute(
+                "ALTER TABLE batches ADD COLUMN semantic_key TEXT NOT NULL DEFAULT ''"
+            )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_batches_semantic ON batches(semantic_key)"
+        )
     def __enter__(self) -> "SQLiteLedger":
         return self
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -113,6 +144,8 @@ class SQLiteLedger:
         alerts: Sequence[Mapping[str, Any]],
         composition: Mapping[str, Any] | None,
         created_at: str,
+        fingerprint_version: str = API_VERSION_V1,
+        semantic_key: str = "",
     ) -> tuple[LedgerBatch, bool]:
         fingerprint = batch_fingerprint(plan_fingerprint, source_fingerprint, sample_fingerprint)
         batch_id = f"batch-{fingerprint[:16]}"
@@ -126,8 +159,9 @@ class SQLiteLedger:
                     batch_id, batch_fingerprint, plan_fingerprint, plan_name,
                     source_fingerprint, sample_fingerprint, replay_status,
                     coverage_status, coverage_rate, deviance_status, overall_status,
-                    sample_count, requested_count, alerts_json, composition_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sample_count, requested_count, alerts_json, composition_json,
+                    created_at, fingerprint_version, semantic_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
@@ -146,6 +180,8 @@ class SQLiteLedger:
                     _json(list(alerts)),
                     _json(dict(composition or {"strata": {}})),
                     created_at,
+                    fingerprint_version,
+                    semantic_key,
                 ),
             )
             self._connection.commit()
@@ -181,9 +217,24 @@ class SQLiteLedger:
         except sqlite3.Error as exc:
             raise LedgerError("LEDGER-004", f"cannot query ledger: {exc}", path=str(self.path)) from exc
         return [_row_to_batch(row) for row in rows]
-    def previous_for_plan(self, plan_fingerprint: str, *, exclude_batch_id: str | None = None) -> LedgerBatch | None:
+    def previous_for_plan(
+        self,
+        plan_fingerprint: str,
+        *,
+        fingerprint_version: str | None = None,
+        exclude_batch_id: str | None = None,
+    ) -> LedgerBatch | None:
+        """Most recent batch for a plan fingerprint.
+
+        When ``fingerprint_version`` is given the search stays inside that
+        fingerprint version, so a migrated plan never silently picks up a
+        baseline recorded under a different version.
+        """
         sql = "SELECT * FROM batches WHERE plan_fingerprint = ?"
         params: list[Any] = [plan_fingerprint]
+        if fingerprint_version is not None:
+            sql += " AND fingerprint_version = ?"
+            params.append(fingerprint_version)
         if exclude_batch_id:
             sql += " AND batch_id != ?"
             params.append(exclude_batch_id)
@@ -193,6 +244,54 @@ class SQLiteLedger:
         except sqlite3.Error as exc:
             raise LedgerError("LEDGER-004", f"cannot query previous batch: {exc}", path=str(self.path)) from exc
         return _row_to_batch(row) if row is not None else None
+    def previous_equivalent(
+        self,
+        semantic_key: str,
+        *,
+        exclude_fingerprint_version: str | None = None,
+        exclude_batch_id: str | None = None,
+    ) -> LedgerBatch | None:
+        """Most recent batch in the same semantic equivalence group.
+
+        Used to locate a baseline recorded under a different fingerprint
+        version. Batches without a semantic key (legacy rows that have not
+        been backfilled) never match.
+        """
+        if not semantic_key:
+            return None
+        sql = "SELECT * FROM batches WHERE semantic_key = ? AND semantic_key != ''"
+        params: list[Any] = [semantic_key]
+        if exclude_fingerprint_version is not None:
+            sql += " AND fingerprint_version != ?"
+            params.append(exclude_fingerprint_version)
+        if exclude_batch_id:
+            sql += " AND batch_id != ?"
+            params.append(exclude_batch_id)
+        sql += " ORDER BY rowid DESC LIMIT 1"
+        try:
+            row = self._connection.execute(sql, params).fetchone()
+        except sqlite3.Error as exc:
+            raise LedgerError("LEDGER-004", f"cannot query equivalent batch: {exc}", path=str(self.path)) from exc
+        return _row_to_batch(row) if row is not None else None
+    def backfill_semantic_key(self, plan_fingerprint: str, semantic_key: str) -> int:
+        """Fill the semantic key on legacy batches that predate the column.
+
+        Batches sharing a plan fingerprint share one canonical form, hence
+        one semantic key; only empty keys are touched. Returns the number
+        of rows updated.
+        """
+        if not semantic_key:
+            return 0
+        try:
+            cursor = self._connection.execute(
+                "UPDATE batches SET semantic_key = ? "
+                "WHERE plan_fingerprint = ? AND semantic_key = ''",
+                (semantic_key, plan_fingerprint),
+            )
+            self._connection.commit()
+        except sqlite3.Error as exc:
+            raise LedgerError("LEDGER-002", f"cannot backfill semantic key: {exc}", path=str(self.path)) from exc
+        return cursor.rowcount
 
 def _row_to_batch(row: sqlite3.Row) -> LedgerBatch:
     return LedgerBatch(
@@ -212,4 +311,6 @@ def _row_to_batch(row: sqlite3.Row) -> LedgerBatch:
         alerts_json=str(row["alerts_json"]),
         composition_json=str(row["composition_json"]),
         created_at=str(row["created_at"]),
+        fingerprint_version=str(row["fingerprint_version"]),
+        semantic_key=str(row["semantic_key"]),
     )

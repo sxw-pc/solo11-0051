@@ -13,6 +13,20 @@ from samplelaw.source.dataset import Dataset
 
 Composition = dict[str, Any]
 
+# Denominator used when turning within-stratum dimension counts into a
+# distribution: the sum of the recorded counts for that dimension inside
+# the stratum (never the stratum's sample_rows). The same rule applies to
+# both batches, and it is spelled out on every drift metric computed
+# against a cross-version baseline so the two sides cannot silently
+# normalize by different totals.
+DRIFT_DENOMINATOR = "stratum_dimension_count_sum"
+
+@dataclass(frozen=True)
+class IsolatedBaseline:
+    """A semantically equivalent baseline withheld by version isolation."""
+    batch_id: str
+    fingerprint_version: str
+
 @dataclass(frozen=True)
 class DevianceAlert:
     code: str
@@ -61,6 +75,8 @@ def composition_from_json(value: str | None) -> Composition | None:
     return parsed if isinstance(parsed, dict) else None
 
 def _distribution(counts: Mapping[str, int]) -> dict[str, float]:
+    """Share of each level; the denominator is the sum of the dimension's
+    recorded counts within the stratum (see DRIFT_DENOMINATOR)."""
     total = sum(counts.values())
     if total == 0:
         return {}
@@ -79,6 +95,9 @@ def detect_deviance(
     composition: Composition | None,
     previous_composition: Composition | None = None,
     previous_batch_id: str | None = None,
+    *,
+    isolated_baseline: IsolatedBaseline | None = None,
+    cross_version_baseline: bool = False,
 ) -> DevianceResult:
     alerts: list[DevianceAlert] = []
     max_rows = plan.sampling.max_per_stratum
@@ -110,6 +129,23 @@ def detect_deviance(
                 )
             )
     drift_metrics: list[dict[str, Any]] = []
+    if isolated_baseline is not None and previous_composition is None:
+        alerts.append(
+            DevianceAlert(
+                code="DEV-008",
+                kind="BASELINE_ISOLATED",
+                stratum="",
+                dimension="",
+                metric="fingerprint_version",
+                threshold=0.0,
+                observed=0.0,
+                message=(
+                    f"equivalent baseline {isolated_baseline.batch_id} uses fingerprint version "
+                    f"{isolated_baseline.fingerprint_version}; cross-version baselines are "
+                    "isolated unless explicitly enabled"
+                ),
+            )
+        )
     if previous_composition is not None and composition is not None:
         current_strata = composition.get("strata", {})
         previous_strata = previous_composition.get("strata", {})
@@ -131,6 +167,13 @@ def detect_deviance(
                     "threshold": plan.thresholds.drift,
                     "observed": observed,
                 }
+                if cross_version_baseline:
+                    # Cross-version baselines must state the denominator
+                    # explicitly: each side is normalized by the sum of its
+                    # own recorded counts for this dimension in this stratum.
+                    metric["denominator"] = DRIFT_DENOMINATOR
+                    metric["current_denominator"] = sum(current_counts.values())
+                    metric["baseline_denominator"] = sum(previous_counts.values())
                 drift_metrics.append(metric)
                 if observed > plan.thresholds.drift:
                     alerts.append(

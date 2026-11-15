@@ -36,6 +36,7 @@ def plan_text(
     drift: float = 0.2,
     dimensions: Sequence[str] = (),
     fingerprint_columns: Sequence[str] | None = None,
+    api_version: str = "samplelaw/v1",
 ) -> str:
     sampling: dict[str, Any] = {
         "mode": mode,
@@ -53,7 +54,7 @@ def plan_text(
     if expected:
         strata["expected_levels"] = [list(level) for level in expected]
     data: dict[str, Any] = {
-        "apiVersion": "samplelaw/v1",
+        "apiVersion": api_version,
         "kind": "SamplingPlan",
         "metadata": {"name": name, "version": 1},
         "sampling": sampling,

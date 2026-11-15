@@ -59,11 +59,21 @@ def _build_pipeline(data: dict[str, Any], document: YamlDocument) -> PipelineSpe
     description = _text(metadata.get("description"), "metadata.description", issues, required=False)
     base = document.path.parent
     defaults = _mapping(data.get("defaults", {}), "defaults", issues)
-    _unknown(defaults, {"output_dir", "ledger", "report_formats"}, "defaults", issues)
+    _unknown(defaults, {"output_dir", "ledger", "report_formats", "allow_cross_version_baseline"}, "defaults", issues)
     output_raw = _text(defaults.get("output_dir"), "defaults.output_dir", issues, required=False) or "out"
     ledger_raw = _text(defaults.get("ledger"), "defaults.ledger", issues, required=False)
     output_dir = _resolve(base, output_raw)
     ledger_path = _resolve(base, ledger_raw) if ledger_raw else output_dir / "ledger.sqlite"
+    allow_cross_raw = defaults.get("allow_cross_version_baseline")
+    if allow_cross_raw is None:
+        allow_cross_version_baseline = False
+    elif isinstance(allow_cross_raw, bool):
+        allow_cross_version_baseline = allow_cross_raw
+    else:
+        issues.append(
+            ValidationIssue("PIPE-002", "defaults.allow_cross_version_baseline", "expected a boolean")
+        )
+        allow_cross_version_baseline = False
     formats_raw = defaults.get("report_formats")
     if formats_raw is None:
         report_formats = REPORT_FORMATS
@@ -120,6 +130,7 @@ def _build_pipeline(data: dict[str, Any], document: YamlDocument) -> PipelineSpe
         report_formats=report_formats,
         jobs=tuple(jobs),
         config_path=document.path,
+        allow_cross_version_baseline=allow_cross_version_baseline,
     )
 
 def _parse_source(value: Any, path: str, base: Path, issues: list[ValidationIssue]) -> SourceSpec:

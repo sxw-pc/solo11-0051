@@ -22,6 +22,7 @@ from samplelaw.util.hashing import batch_fingerprint, short_hash
 from samplelaw.verify.coverage import CoverageResult, verify_coverage
 from samplelaw.verify.deviance import (
     DevianceResult,
+    IsolatedBaseline,
     build_composition,
     composition_from_json,
     detect_deviance,
@@ -89,8 +90,53 @@ def verify_sample(
     )
     return sampling, replay, coverage, deviance, document
 
-def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) -> PipelineRunResult:
+def _find_baseline(
+    ledger: SQLiteLedger,
+    plan: PlanSpec,
+    candidate_id: str,
+    *,
+    allow_cross_version: bool,
+) -> tuple[LedgerBatch | None, IsolatedBaseline | None, bool]:
+    """Locate the baseline batch for deviance.
+
+    Same-version baselines are always eligible. A batch from another
+    fingerprint version is only used when it falls in the same semantic
+    equivalence group *and* cross-version baselines are explicitly enabled;
+    otherwise it is reported back as an isolated baseline (DEV-008).
+    """
+    previous = ledger.previous_for_plan(
+        plan.fingerprint,
+        fingerprint_version=plan.api_version,
+        exclude_batch_id=candidate_id,
+    )
+    if previous is not None:
+        return previous, None, False
+    equivalent = ledger.previous_equivalent(
+        plan.semantic_key,
+        exclude_fingerprint_version=plan.api_version,
+        exclude_batch_id=candidate_id,
+    )
+    if equivalent is None:
+        return None, None, False
+    if allow_cross_version:
+        return equivalent, None, True
+    return (
+        None,
+        IsolatedBaseline(
+            batch_id=equivalent.batch_id,
+            fingerprint_version=equivalent.fingerprint_version,
+        ),
+        False,
+    )
+
+def run_pipeline(
+    config_path: str | Path,
+    *,
+    generated_at: str | None = None,
+    allow_cross_version_baseline: bool = False,
+) -> PipelineRunResult:
     pipeline = load_pipeline(config_path)
+    allow_cross_version = allow_cross_version_baseline or pipeline.allow_cross_version_baseline
     timestamp = utc_timestamp(generated_at)
     pipeline.output_dir.mkdir(parents=True, exist_ok=True)
     jobs: list[JobResult] = []
@@ -107,7 +153,13 @@ def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) ->
             composition = build_composition(plan, persisted_sample)
             candidate_fp = batch_fingerprint(plan.fingerprint, source.fingerprint(), sampling.sample_fingerprint)
             candidate_id = f"batch-{short_hash(candidate_fp, 16)}"
-            previous = ledger.previous_for_plan(plan.fingerprint, exclude_batch_id=candidate_id)
+            ledger.backfill_semantic_key(plan.fingerprint, plan.semantic_key)
+            previous, isolated_baseline, cross_version = _find_baseline(
+                ledger,
+                plan,
+                candidate_id,
+                allow_cross_version=allow_cross_version,
+            )
             previous_composition = composition_from_json(previous.composition_json) if previous else None
             deviance = detect_deviance(
                 plan,
@@ -115,6 +167,8 @@ def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) ->
                 composition,
                 previous_composition,
                 previous.batch_id if previous else None,
+                isolated_baseline=isolated_baseline,
+                cross_version_baseline=cross_version,
             )
             document = build_report_document(
                 plan=plan,
@@ -146,6 +200,8 @@ def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) ->
                 alerts=document.alerts,
                 composition=composition,
                 created_at=timestamp,
+                fingerprint_version=plan.api_version,
+                semantic_key=plan.semantic_key,
             )
             jobs.append(
                 JobResult(
