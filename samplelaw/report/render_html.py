@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from html import escape
 
-from samplelaw.report.model import ReportDocument
+from samplelaw.report.model import ReportDocument, composition_table_rows
 
 _CSS = """
 :root { color-scheme: light; --ink:#19232d; --muted:#5c6b78; --line:#d7dee5;
@@ -63,6 +63,7 @@ def render_html(document: ReportDocument) -> str:
         for item in data["alerts"]
     ]
     warning_rows = [[item["code"], item["stratum"], item["message"]] for item in document.sampling_warnings]
+    composition_rows = composition_table_rows(deviance.get("composition"))
     stratum_rows = [
         [
             item.label,
@@ -162,6 +163,10 @@ def render_html(document: ReportDocument) -> str:
             ],
             "kv",
         ),
+        "<h3>层内构成快照</h3>",
+        _table(["层", "维度", "取值", "行数", "层样本行数"], composition_rows)
+        if composition_rows
+        else '<p class="muted">无构成快照。</p>',
         "</section>",
         "<section><h2>告警明细</h2>",
         _table(["类型", "代码", "层", "指标", "阈值", "实测值", "说明"], alert_rows)

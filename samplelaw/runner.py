@@ -25,6 +25,8 @@ from samplelaw.verify.deviance import (
     build_composition,
     composition_from_json,
     detect_deviance,
+    deviance_from_ledger,
+    deviance_payload,
 )
 from samplelaw.verify.replay import ReplayResult, verify_replay
 
@@ -86,8 +88,21 @@ def verify_sample(
         deviance=deviance,
         generated_at=generated_at,
         previous_batch_id=None,
+        composition=composition,
     )
     return sampling, replay, coverage, deviance, document
+
+def _recorded_verdict(ledger_batch: LedgerBatch) -> DevianceResult:
+    """Return the deviance verdict stored on a ledger row, not this run's recomputation."""
+    return deviance_from_ledger(
+        ledger_batch.deviance_status,
+        ledger_batch.deviance_json,
+        ledger_batch.alerts_json,
+    )
+
+def _batch_identity(plan: PlanSpec, source: Dataset, sampling: SamplingResult) -> str:
+    fingerprint = batch_fingerprint(plan.fingerprint, source.fingerprint(), sampling.sample_fingerprint)
+    return f"batch-{short_hash(fingerprint, 16)}"
 
 def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) -> PipelineRunResult:
     pipeline = load_pipeline(config_path)
@@ -104,18 +119,29 @@ def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) ->
             persisted_sample = read_csv_dataset(sample_path, name=f"{job.job_id}-sample")
             replay = verify_replay(plan, source, persisted_sample)
             coverage = verify_coverage(plan, source, persisted_sample)
-            composition = build_composition(plan, persisted_sample)
-            candidate_fp = batch_fingerprint(plan.fingerprint, source.fingerprint(), sampling.sample_fingerprint)
-            candidate_id = f"batch-{short_hash(candidate_fp, 16)}"
-            previous = ledger.previous_for_plan(plan.fingerprint, exclude_batch_id=candidate_id)
-            previous_composition = composition_from_json(previous.composition_json) if previous else None
-            deviance = detect_deviance(
-                plan,
-                sampling.allocations,
-                composition,
-                previous_composition,
-                previous.batch_id if previous else None,
-            )
+            computed_composition = build_composition(plan, persisted_sample)
+            candidate_id = _batch_identity(plan, source, sampling)
+            # A duplicate batch must replay the verdict already in the ledger; computing
+            # a fresh deviance would compare against a different baseline and diverge.
+            existing = ledger.get_batch(candidate_id)
+            if existing is not None:
+                composition = composition_from_json(existing.composition_json) or computed_composition
+                deviance = _recorded_verdict(existing)
+                # The stored row is authoritative; never let this run's previous
+                # batch leak into the replayed baseline.
+                previous_batch_id = None
+            else:
+                composition = computed_composition
+                previous = ledger.previous_for_plan(plan.fingerprint, exclude_batch_id=candidate_id)
+                previous_composition = composition_from_json(previous.composition_json) if previous else None
+                deviance = detect_deviance(
+                    plan,
+                    sampling.allocations,
+                    composition,
+                    previous_composition,
+                    previous.batch_id if previous else None,
+                )
+                previous_batch_id = previous.batch_id if previous else None
             document = build_report_document(
                 plan=plan,
                 source=source,
@@ -124,12 +150,8 @@ def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) ->
                 coverage=coverage,
                 deviance=deviance,
                 generated_at=timestamp,
-                previous_batch_id=previous.batch_id if previous else None,
-            )
-            report_paths = write_reports(
-                document,
-                pipeline.output_dir / "reports" / job.job_id,
-                pipeline.report_formats,
+                previous_batch_id=previous_batch_id,
+                composition=composition,
             )
             ledger_batch, duplicate = ledger.record_batch(
                 plan_fingerprint=plan.fingerprint,
@@ -145,7 +167,29 @@ def run_pipeline(config_path: str | Path, *, generated_at: str | None = None) ->
                 requested_count=document.requested_total,
                 alerts=document.alerts,
                 composition=composition,
+                deviance=deviance_payload(deviance),
                 created_at=timestamp,
+            )
+            if duplicate and existing is None:
+                # Another writer inserted the same batch between our read and our
+                # write. Re-render so the report matches what the ledger keeps.
+                composition = composition_from_json(ledger_batch.composition_json) or composition
+                deviance = _recorded_verdict(ledger_batch)
+                document = build_report_document(
+                    plan=plan,
+                    source=source,
+                    sampling=sampling,
+                    replay=replay,
+                    coverage=coverage,
+                    deviance=deviance,
+                    generated_at=timestamp,
+                    previous_batch_id=deviance.baseline_batch_id,
+                    composition=composition,
+                )
+            report_paths = write_reports(
+                document,
+                pipeline.output_dir / "reports" / job.job_id,
+                pipeline.report_formats,
             )
             jobs.append(
                 JobResult(

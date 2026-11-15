@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from samplelaw.config.schema import PlanSpec
 from samplelaw.plan.sampling import SamplingResult
@@ -10,7 +10,7 @@ from samplelaw.report.model import ReportDocument, ReportStratum, utc_timestamp
 from samplelaw.source.dataset import Dataset
 from samplelaw.util.hashing import batch_fingerprint, short_hash
 from samplelaw.verify.coverage import CoverageResult
-from samplelaw.verify.deviance import DevianceResult
+from samplelaw.verify.deviance import DevianceResult, deviance_alert_payload
 from samplelaw.verify.replay import ReplayResult
 
 def alerts_for_ledger(
@@ -52,14 +52,7 @@ def alerts_for_ledger(
     alerts.extend(
         {
             "type": "DEVIANCE",
-            "code": item.code,
-            "kind": item.kind,
-            "stratum": item.stratum,
-            "dimension": item.dimension,
-            "metric": item.metric,
-            "threshold": item.threshold,
-            "observed": item.observed,
-            "message": item.message,
+            **deviance_alert_payload(item),
         }
         for item in deviance.alerts
     )
@@ -76,6 +69,7 @@ def build_report_document(
     deviance: DevianceResult,
     generated_at: str | None,
     previous_batch_id: str | None,
+    composition: Mapping[str, Any] | None = None,
 ) -> ReportDocument:
     timestamp = utc_timestamp(generated_at)
     source_fp = source.fingerprint()
@@ -149,20 +143,9 @@ def build_report_document(
         "status": deviance.status,
         "baseline_batch_id": deviance.baseline_batch_id or previous_batch_id,
         "threshold": plan.thresholds.drift,
-        "alerts": [
-            {
-                "code": item.code,
-                "kind": item.kind,
-                "stratum": item.stratum,
-                "dimension": item.dimension,
-                "metric": item.metric,
-                "threshold": item.threshold,
-                "observed": item.observed,
-                "message": item.message,
-            }
-            for item in deviance.alerts
-        ],
+        "alerts": [deviance_alert_payload(item) for item in deviance.alerts],
         "drift_metrics": list(deviance.drift_metrics),
+        "composition": composition,
     }
     return ReportDocument(
         generated_at=timestamp,

@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS batches (
     requested_count INTEGER NOT NULL,
     alerts_json TEXT NOT NULL,
     composition_json TEXT NOT NULL,
+    deviance_json TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_batches_plan ON batches(plan_fingerprint);
@@ -51,6 +52,7 @@ class LedgerBatch:
     requested_count: int
     alerts_json: str
     composition_json: str
+    deviance_json: str
     created_at: str
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +70,8 @@ class LedgerBatch:
             "sample_count": self.sample_count,
             "requested_count": self.requested_count,
             "alerts": json.loads(self.alerts_json),
+            "composition": json.loads(self.composition_json),
+            "deviance": json.loads(self.deviance_json) if self.deviance_json else None,
             "created_at": self.created_at,
         }
 
@@ -83,10 +87,20 @@ class SQLiteLedger:
             self._connection = sqlite3.connect(str(self.path))
             self._connection.row_factory = sqlite3.Row
             self._connection.executescript(_SCHEMA)
+            self._migrate()
             self._connection.execute("PRAGMA journal_mode = DELETE")
             self._connection.commit()
         except sqlite3.Error as exc:
             raise LedgerError("LEDGER-001", f"cannot open ledger: {exc}", path=str(self.path)) from exc
+    def _migrate(self) -> None:
+        """Add columns introduced after the first ledger format.
+
+        Older rows keep an empty ``deviance_json``; their verdict can still be
+        rebuilt from ``deviance_status`` and ``alerts_json``.
+        """
+        columns = {str(row["name"]) for row in self._connection.execute("PRAGMA table_info(batches)")}
+        if "deviance_json" not in columns:
+            self._connection.execute("ALTER TABLE batches ADD COLUMN deviance_json TEXT NOT NULL DEFAULT ''")
     def __enter__(self) -> "SQLiteLedger":
         return self
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -113,6 +127,7 @@ class SQLiteLedger:
         alerts: Sequence[Mapping[str, Any]],
         composition: Mapping[str, Any] | None,
         created_at: str,
+        deviance: Mapping[str, Any] | None = None,
     ) -> tuple[LedgerBatch, bool]:
         fingerprint = batch_fingerprint(plan_fingerprint, source_fingerprint, sample_fingerprint)
         batch_id = f"batch-{fingerprint[:16]}"
@@ -126,8 +141,9 @@ class SQLiteLedger:
                     batch_id, batch_fingerprint, plan_fingerprint, plan_name,
                     source_fingerprint, sample_fingerprint, replay_status,
                     coverage_status, coverage_rate, deviance_status, overall_status,
-                    sample_count, requested_count, alerts_json, composition_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sample_count, requested_count, alerts_json, composition_json,
+                    deviance_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
@@ -145,6 +161,7 @@ class SQLiteLedger:
                     int(requested_count),
                     _json(list(alerts)),
                     _json(dict(composition or {"strata": {}})),
+                    _json(dict(deviance)) if deviance is not None else "",
                     created_at,
                 ),
             )
@@ -211,5 +228,6 @@ def _row_to_batch(row: sqlite3.Row) -> LedgerBatch:
         requested_count=int(row["requested_count"]),
         alerts_json=str(row["alerts_json"]),
         composition_json=str(row["composition_json"]),
+        deviance_json=str(row["deviance_json"]),
         created_at=str(row["created_at"]),
     )

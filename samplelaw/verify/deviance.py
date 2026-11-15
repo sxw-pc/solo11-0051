@@ -48,6 +48,110 @@ def build_composition(plan: PlanSpec, sample: Dataset) -> Composition:
             counts[value] = counts.get(value, 0) + 1
     return {"strata": strata}
 
+def deviance_alert_payload(alert: DevianceAlert) -> dict[str, Any]:
+    return {
+        "code": alert.code,
+        "kind": alert.kind,
+        "stratum": alert.stratum,
+        "dimension": alert.dimension,
+        "metric": alert.metric,
+        "threshold": alert.threshold,
+        "observed": alert.observed,
+        "message": alert.message,
+    }
+
+def deviance_payload(result: DevianceResult) -> dict[str, Any]:
+    """Serialize the deviance verdict exactly as it should be replayed from the ledger."""
+    return {
+        "status": result.status,
+        "baseline_batch_id": result.baseline_batch_id,
+        "alerts": [deviance_alert_payload(item) for item in result.alerts],
+        "drift_metrics": [dict(item) for item in result.drift_metrics],
+    }
+
+def deviance_from_payload(value: str | None) -> DevianceResult | None:
+    """Rebuild a deviance verdict from its persisted payload, or ``None`` when unavailable."""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    status = parsed.get("status")
+    if not isinstance(status, str) or not status:
+        return None
+    baseline_raw = parsed.get("baseline_batch_id")
+    baseline = baseline_raw if isinstance(baseline_raw, str) and baseline_raw else None
+    alerts: list[DevianceAlert] = []
+    for item in parsed.get("alerts") or ():
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            alerts.append(
+                DevianceAlert(
+                    code=str(item["code"]),
+                    kind=str(item.get("kind", "")),
+                    stratum=str(item.get("stratum", "")),
+                    dimension=str(item.get("dimension", "")),
+                    metric=str(item.get("metric", "")),
+                    threshold=float(item.get("threshold", 0.0)),
+                    observed=float(item.get("observed", 0.0)),
+                    message=str(item.get("message", "")),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+    metrics = tuple(dict(item) for item in parsed.get("drift_metrics") or () if isinstance(item, Mapping))
+    return DevianceResult(status=status, baseline_batch_id=baseline, alerts=tuple(alerts), drift_metrics=metrics)
+
+def deviance_from_ledger(deviance_status: str, deviance_json: str, alerts_json: str) -> DevianceResult:
+    """Rebuild the verdict stored on a ledger batch.
+
+    Rows written before deviance payloads were persisted only carry the
+    status and the combined alert list; for those we expose the stored
+    status/alerts and leave baseline and drift metrics empty rather than
+    pretending this run's recomputation is the historical verdict.
+    """
+    restored = deviance_from_payload(deviance_json)
+    if restored is not None:
+        return DevianceResult(
+            status=deviance_status or restored.status,
+            baseline_batch_id=restored.baseline_batch_id,
+            alerts=restored.alerts,
+            drift_metrics=restored.drift_metrics,
+        )
+    alerts: list[DevianceAlert] = []
+    try:
+        parsed_alerts = json.loads(alerts_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        parsed_alerts = []
+    for item in parsed_alerts if isinstance(parsed_alerts, list) else ():
+        if not isinstance(item, Mapping) or item.get("type") != "DEVIANCE":
+            continue
+        try:
+            alerts.append(
+                DevianceAlert(
+                    code=str(item["code"]),
+                    kind=str(item.get("kind", "")),
+                    stratum=str(item.get("stratum", "")),
+                    dimension=str(item.get("dimension", "")),
+                    metric=str(item.get("metric", "")),
+                    threshold=float(item.get("threshold", 0.0)),
+                    observed=float(item.get("observed", 0.0)),
+                    message=str(item.get("message", "")),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return DevianceResult(
+        status=deviance_status,
+        baseline_batch_id=None,
+        alerts=tuple(alerts),
+        drift_metrics=(),
+    )
+
 def composition_to_json(composition: Composition) -> str:
     return json.dumps(composition, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 

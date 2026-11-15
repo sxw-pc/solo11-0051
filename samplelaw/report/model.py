@@ -9,6 +9,30 @@ from typing import Any
 
 _TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
+def composition_table_rows(composition: object) -> list[list[object]]:
+    """Flatten a composition snapshot into stable per-value table rows."""
+    if not isinstance(composition, dict):
+        return []
+    strata = composition.get("strata")
+    if not isinstance(strata, dict):
+        return []
+    rows: list[list[object]] = []
+    for label in sorted(strata):
+        entry = strata[label]
+        if not isinstance(entry, dict):
+            continue
+        sample_rows = entry.get("sample_rows", 0)
+        dimensions = entry.get("dimensions")
+        if not isinstance(dimensions, dict):
+            continue
+        for dimension in sorted(dimensions):
+            counts = dimensions[dimension]
+            if not isinstance(counts, dict):
+                continue
+            for value in sorted(counts):
+                rows.append([label, dimension, value, counts[value], sample_rows])
+    return rows
+
 def utc_timestamp(value: str | datetime | None = None) -> str:
     """Return the single report timestamp format: ``YYYY-MM-DDTHH:MM:SSZ``."""
     if value is None:

@@ -108,6 +108,9 @@ python -m samplelaw preview --dir out/reports
 - `sample`：`fingerprint`、`mode`、`seed`、`requested_rows`、`rows`、`excluded_rows`、`eligible_rows`。
 - `strata[]`：层名、源行数/占比、目标量、实得量、样本占比、占比偏差、稀有/空层/命中标记。
 - `sampling.warnings[]`、`replay`、`coverage`、`deviance`、`alerts[]`。
+- `deviance`：`status`、`baseline_batch_id`、`threshold`、`alerts[]`、`drift_metrics[]`、`composition`（本批次层内维度构成快照）。
+
+重复批次的报告会直接复用台账行里落库的 `deviance` 段（`status`、`baseline_batch_id`、`alerts`、`drift_metrics`）与 `composition` 快照，与本批次的重新计算无关；非重复批次才按上一批同方案记录计算漂移。
 
 JSON 使用稳定字段顺序、UTF-8 与 LF；Markdown 的表格行顺序稳定；HTML 内联 CSS、无脚本、无外链。相同文档重复渲染得到相同字节。
 
@@ -123,9 +126,10 @@ JSON 使用稳定字段顺序、UTF-8 与 LF；Markdown 的表格行顺序稳定
 | `overall_status` | `PASS` / `WARN` / `FAIL`。 |
 | `sample_count`、`requested_count` | 实得量 / 目标量。 |
 | `alerts_json`、`composition_json` | 告警明细与层内维度构成快照，供下一批偏离检测。 |
+| `deviance_json` | 本批次落库的偏离结论（`status`、`baseline_batch_id`、`alerts`、`drift_metrics`），重复批次据此回放。 |
 | `created_at` | 固定 UTC ISO-8601。 |
 
-重复批次返回已有记录并标记 `duplicate`，不会重复写入。查询入口：
+重复批次返回已有记录并标记 `duplicate`，不会重复写入；报告中的 `deviance` 段此时取该行的落库值。旧版本写入的台账在打开时会自动补 `deviance_json` 列（旧行为空，按 `deviance_status` 与 `alerts_json` 回放状态和告警）。查询入口：
 
 ```bash
 python -m samplelaw inspect --ledger out/ledger.sqlite --plan-fingerprint <sha256>
@@ -215,7 +219,7 @@ samplelaw/
 
 **为什么 `deviance` 是 `BASELINE`？**
 
-同一方案首次入库没有上一批可比，构成漂移以基线记录落库；再次运行同方案的新批次时会对比上一批。完全相同的批次会被台账识别为重复批次。
+同一方案首次入库没有上一批可比，构成漂移以基线记录落库；再次运行同方案的新批次时会对比上一批。完全相同的批次会被台账识别为重复批次，报告直接复用首次落库的偏离结论与构成快照，不会用本次重算结果覆盖。
 
 **没有 Flask 能用吗？**
 

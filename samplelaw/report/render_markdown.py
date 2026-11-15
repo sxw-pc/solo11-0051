@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from samplelaw.report.model import ReportDocument
+from samplelaw.report.model import ReportDocument, composition_table_rows
 
 def _cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
@@ -130,9 +130,15 @@ def render_markdown(document: ReportDocument) -> str:
             ],
         ),
         "",
-        "## 告警明细",
+        "### 层内构成快照",
         "",
     ]
+    composition_rows = composition_table_rows(document.deviance.get("composition"))
+    if composition_rows:
+        lines.append(_table(["层", "维度", "取值", "行数", "层样本行数"], composition_rows))
+    else:
+        lines.append("无构成快照。")
+    lines.extend(["", "## 告警明细", ""])
     if data["alerts"]:
         lines.append(
             _table(
